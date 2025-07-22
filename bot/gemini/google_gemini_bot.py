@@ -7,7 +7,8 @@ Google gemini bot
 # encoding:utf-8
 
 from bot.bot import Bot
-import google.generativeai as genai
+# 使用googleai方式调用测试
+from google import genai
 from bot.session_manager import SessionManager
 from bridge.context import ContextType, Context
 from bridge.reply import Reply, ReplyType
@@ -23,7 +24,8 @@ class GoogleGeminiBot(Bot):
 
     def __init__(self):
         super().__init__()
-        self.api_key = conf().get("gemini_api_key")
+        self.api_key = conf().get("open_ai_api_key")
+        self.api_base = conf().get("open_ai_api_base")
         # 复用chatGPT的token计算方式
         self.sessions = SessionManager(ChatGPTSession, model=conf().get("model") or "gpt-3.5-turbo")
         self.model = conf().get("model") or "gemini-pro"
@@ -38,23 +40,21 @@ class GoogleGeminiBot(Bot):
             session_id = context["session_id"]
             session = self.sessions.session_query(query, session_id)
             gemini_messages = self._convert_to_gemini_messages(self.filter_messages(session.messages))
-            logger.debug(f"[Gemini] messages={gemini_messages}")
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model)
+            logger.info(f"[Gemini] messages={gemini_messages}")
             
-            # 添加安全设置
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-            
-            # 生成回复，包含安全设置
-            response = model.generate_content(
-                gemini_messages,
-                safety_settings=safety_settings
+            logger.info(f"[Gemini] Using base_url: {self.api_base}, model: {self.model}")
+            client = genai.Client(
+                http_options={"base_url": self.api_base},
+                api_key=self.api_key,
             )
+
+            # 生成回复
+            response = client.models.generate_content(
+                model=self.model,
+                contents=gemini_messages
+            )
+
+
             if response.candidates and response.candidates[0].content:
                 reply_text = response.candidates[0].content.parts[0].text
                 logger.info(f"[Gemini] reply={reply_text}")

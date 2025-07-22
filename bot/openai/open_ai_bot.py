@@ -21,16 +21,16 @@ user_session = dict()
 class OpenAIBot(Bot, OpenAIImage):
     def __init__(self):
         super().__init__()
-        openai.api_key = conf().get("open_ai_api_key")
+        openai.api_key = conf().get("open_ai_api_key")    
         if conf().get("open_ai_api_base"):
             openai.api_base = conf().get("open_ai_api_base")
         proxy = conf().get("proxy")
         if proxy:
             openai.proxy = proxy
 
-        self.sessions = SessionManager(OpenAISession, model=conf().get("model") or "text-davinci-003")
+        self.sessions = SessionManager(OpenAISession, model=conf().get("model") or "gpt-3.5-turbo")
         self.args = {
-            "model": conf().get("model") or "text-davinci-003",  # 对话模型的名称
+            "model": conf().get("model") or "gpt-3.5-turbo",  # 对话模型的名称
             "temperature": conf().get("temperature", 0.9),  # 值在[0,1]之间，越大表示回复越具有不确定性
             "max_tokens": 1200,  # 回复最大的字符数
             "top_p": 1,
@@ -38,7 +38,6 @@ class OpenAIBot(Bot, OpenAIImage):
             "presence_penalty": conf().get("presence_penalty", 0.0),  # [-2,2]之间，该值越大则更倾向于产生不同的内容
             "request_timeout": conf().get("request_timeout", None),  # 请求超时时间，openai接口默认设置为600，对于难问题一般需要较长时间
             "timeout": conf().get("request_timeout", None),  # 重试超时时间，在这个时间内，将会自动重试
-            "stop": ["\n\n\n"],
         }
 
     def reply(self, query, context=None):
@@ -81,16 +80,48 @@ class OpenAIBot(Bot, OpenAIImage):
                     reply = Reply(ReplyType.ERROR, retstring)
                 return reply
 
+    def _convert_session_to_messages(self, session: OpenAISession):
+        """将OpenAISession转换为ChatCompletion所需的messages格式"""
+        messages = []
+        
+        # 添加系统消息（如果有的话）
+        if hasattr(session, 'system_prompt') and session.system_prompt:
+            messages.append({"role": "system", "content": session.system_prompt})
+        
+        # 将session的历史消息转换为messages格式
+        # 假设session.messages是一个包含历史对话的列表
+        if hasattr(session, 'messages') and session.messages:
+            for msg in session.messages:
+                if isinstance(msg, dict):
+                    # 如果已经是字典格式，直接添加
+                    messages.append(msg)
+                else:
+                    # 如果是字符串格式，需要解析
+                    # 这里需要根据OpenAISession的实际格式来调整
+                    messages.append({"role": "user", "content": str(msg)})
+        else:
+            # 如果没有历史消息，将整个session作为用户消息
+            session_str = str(session)
+            if session_str.strip():
+                messages.append({"role": "user", "content": session_str})
+        
+        return messages
+
     def reply_text(self, session: OpenAISession, retry_count=0):
         try:
-            response = openai.Completion.create(prompt=str(session), **self.args)
-            res_content = response.choices[0]["text"].strip().replace("<|endoftext|>", "")
+            # 将session转换为messages格式
+            messages = self._convert_session_to_messages(session)
+            
+            response = openai.ChatCompletion.create(messages=messages, **self.args)
+            res_content = response.choices[0]["message"]["content"].strip()
             total_tokens = response["usage"]["total_tokens"]
             completion_tokens = response["usage"]["completion_tokens"]
+            prompt_tokens = response["usage"]["prompt_tokens"]
             logger.info("[OPEN_AI] reply={}".format(res_content))
             return {
                 "total_tokens": total_tokens,
                 "completion_tokens": completion_tokens,
+                "input_tokens": prompt_tokens,
                 "content": res_content,
             }
         except Exception as e:

@@ -53,8 +53,12 @@ def create_bot(bot_type):
         from bot.dashscope.dashscope_bot import DashscopeBot
         return DashscopeBot()
     elif bot_type == const.GEMINI:
-        from bot.gemini.google_gemini_bot import GoogleGeminiBot
-        return GoogleGeminiBot()
+        # from bot.gemini.google_gemini_bot import GoogleGeminiBot
+        # return GoogleGeminiBot()
+    
+            # OpenAI 官方对话模型API
+        from bot.openai.open_ai_bot import OpenAIBot
+        return OpenAIBot()
 
     elif bot_type == const.ZHIPU_AI:
         from bot.zhipuai.zhipuai_bot import ZHIPUAIBot
