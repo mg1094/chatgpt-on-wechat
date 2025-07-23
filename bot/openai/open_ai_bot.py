@@ -56,20 +56,24 @@ class OpenAIBot(Bot, OpenAIImage):
                 else:
                     session = self.sessions.session_query(query, session_id)
                     result = self.reply_text(session)
-                    total_tokens, completion_tokens, reply_content = (
-                        result["total_tokens"],
-                        result["completion_tokens"],
-                        result["content"],
-                    )
-                    logger.debug(
-                        "[OPEN_AI] new_query={}, session_id={}, reply_cont={}, completion_tokens={}".format(str(session), session_id, reply_content, completion_tokens)
-                    )
-
-                    if total_tokens == 0:
-                        reply = Reply(ReplyType.ERROR, reply_content)
+                    if result.get("total_tokens", 0) == 0:
+                        reply = Reply(ReplyType.ERROR, result["content"])
                     else:
-                        self.sessions.session_reply(reply_content, session_id, total_tokens)
-                        reply = Reply(ReplyType.TEXT, reply_content)
+                        reply_content = result["content"]
+                        token_usage = {
+                            "prompt_tokens": result.get("input_tokens", 0),
+                            "completion_tokens": result.get("completion_tokens", 0),
+                            "total_tokens": result.get("total_tokens", 0),
+                        }
+                        
+                        # 记录日志和会话
+                        logger.debug(
+                            "[OPEN_AI] new_query={}, session_id={}, reply_cont={}, completion_tokens={}".format(
+                                str(session), session_id, reply_content, token_usage["completion_tokens"]
+                            )
+                        )
+                        self.sessions.session_reply(reply_content, session_id, token_usage["total_tokens"])
+                        reply = Reply(ReplyType.TEXT, reply_content, token_usage)
                 return reply
             elif context.type == ContextType.IMAGE_CREATE:
                 ok, retstring = self.create_img(query, 0)

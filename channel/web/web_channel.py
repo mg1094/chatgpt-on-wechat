@@ -90,6 +90,7 @@ class WebChannel(ChatChannel):
                 response_data = {
                     "type": str(reply.type),
                     "content": reply.content,
+                    "token_usage": reply.token_usage,
                     "timestamp": time.time(),
                     "request_id": request_id
                 }
@@ -170,6 +171,7 @@ class WebChannel(ChatChannel):
                     "status": "success", 
                     "has_content": True,
                     "content": response["content"],
+                    "token_usage": response["token_usage"],
                     "request_id": response["request_id"],
                     "timestamp": response["timestamp"]
                 })
