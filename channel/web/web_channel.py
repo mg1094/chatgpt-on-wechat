@@ -62,6 +62,18 @@ class WebChannel(ChatChannel):
         """生成唯一的请求ID"""
         return str(uuid.uuid4())
 
+    def _extract_latest_user_message(self, messages):
+        """从messages列表中提取最新的用户消息"""
+        if not messages:
+            return ""
+        
+        # 从后往前找最新的user消息
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                return message.get("content", "")
+        
+        return ""
+
     def send(self, reply: Reply, context: Context):
         try:
             if reply.type in self.NOT_SUPPORT_REPLYTYPE:
@@ -92,7 +104,8 @@ class WebChannel(ChatChannel):
                     "content": reply.content,
                     "token_usage": reply.token_usage,
                     "timestamp": time.time(),
-                    "request_id": request_id
+                    "request_id":request_id,
+                    "session_id": session_id
                 }
                 self.session_queues[session_id].put(response_data)
                 logger.debug(f"Response sent to queue for session {session_id}, request {request_id}")
@@ -110,8 +123,26 @@ class WebChannel(ChatChannel):
         try:
             data = web.data()  # 获取原始POST数据
             json_data = json.loads(data)
-            session_id = json_data.get('session_id', f'session_{int(time.time())}')
-            prompt = json_data.get('message', '')
+            
+            # 检测输入格式并解析
+            if 'messages' in json_data:
+                # 新格式：完整配置
+                session_id = json_data.get('session_id', f'session_{int(time.time())}')
+                model_config = {
+                    'model': json_data.get('model'),
+                    'model_url': json_data.get('model_url'),
+                    'api_key': json_data.get('api_key'),
+                    'messages': json_data.get('messages', [])
+                }
+                # 从messages中提取最新的user消息作为prompt
+                prompt = self._extract_latest_user_message(model_config['messages'])
+                logger.info(f"[WebChannel] New format request: model={model_config['model']}, session_id={session_id}")
+            else:
+                # 旧格式：兼容处理
+                session_id = json_data.get('session_id', f'session_{int(time.time())}')
+                prompt = json_data.get('message', '')
+                model_config = None  # 使用后端默认配置
+                logger.info(f"[WebChannel] Legacy format request: session_id={session_id}")
             
             # 生成请求ID
             request_id = self._generate_request_id()
@@ -135,12 +166,18 @@ class WebChannel(ChatChannel):
             context["request_id"] = request_id
             context["isgroup"] = False  # 添加 isgroup 字段
             context["receiver"] = session_id  # 添加 receiver 字段
+            context["model_config"] = model_config  # 添加模型配置
             
             # 异步处理消息 - 只传递上下文
-            threading.Thread(target=self.produce, args=(context,)).start()
+            # threading.Thread 可以传递的参数有:
+            # target: 线程要执行的目标函数
+            # args: 传递给目标函数的位置参数（元组）
+            # kwargs: 传递给目标函数的关键字参数（字典）
+            # daemon: 是否为守护线程（布尔值）
+            threading.Thread(target=self.produce, args=(context,), daemon=True).start()
             
             # 返回请求ID
-            return json.dumps({"status": "success", "request_id": request_id})
+            return json.dumps({"status": "success", "session_id": session_id, "request_id": request_id})
             
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -172,6 +209,7 @@ class WebChannel(ChatChannel):
                     "has_content": True,
                     "content": response["content"],
                     "token_usage": response["token_usage"],
+                    "session_id": response["session_id"],
                     "request_id": response["request_id"],
                     "timestamp": response["timestamp"]
                 })

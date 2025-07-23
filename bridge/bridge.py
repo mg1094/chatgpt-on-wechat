@@ -83,7 +83,41 @@ class Bridge(object):
         return self.btype[typename]
 
     def fetch_reply_content(self, query, context: Context) -> Reply:
-        return self.get_bot("chat").reply(query, context)
+        model_config = context.get("model_config")
+        
+        if model_config:
+            # 动态模式：根据请求配置创建Bot
+            logger.info(f"[Bridge] Using dynamic mode with model: {model_config.get('model')}")
+            bot = self.create_dynamic_bot(model_config)
+            return bot.reply(query, context)
+        else:
+            # 兼容模式：使用原有逻辑
+            logger.debug("[Bridge] Using legacy mode with default config")
+            return self.get_bot("chat").reply(query, context)
+
+    def create_dynamic_bot(self, model_config):
+        """根据模型配置动态创建Bot实例"""
+        model_name = model_config.get("model", "").lower()
+        
+        # if "gpt" in model_name or "o1" in model_name or model_name.startswith("chatgpt"):
+        #     from bot.openai.dynamic_openai_bot import DynamicOpenAIBot
+        #     return DynamicOpenAIBot(model_config)
+        # elif "gemini" in model_name:
+        #     from bot.gemini.dynamic_gemini_bot import DynamicGeminiBot
+        #     return DynamicGeminiBot(model_config)
+        # elif "claude" in model_name:
+        #     from bot.claude.dynamic_claude_bot import DynamicClaudeBot
+        #     return DynamicClaudeBot(model_config)
+        # else:
+        #     # 默认使用OpenAI兼容格式
+        #     logger.warning(f"[Bridge] Unknown model {model_name}, using OpenAI compatible format")
+        #     from bot.openai.dynamic_openai_bot import DynamicOpenAIBot
+        #     return DynamicOpenAIBot(model_config)
+        
+        #现在默认使用统一的openai接口规范调用
+        logger.warning(f"[Bridge] Unknown model {model_name}, using OpenAI compatible format")
+        from bot.openai.dynamic_openai_bot import DynamicOpenAIBot
+        return DynamicOpenAIBot(model_config)
 
     def fetch_voice_to_text(self, voiceFile) -> Reply:
         return self.get_bot("voice_to_text").voiceToText(voiceFile)
