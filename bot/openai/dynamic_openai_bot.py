@@ -42,19 +42,30 @@ class DynamicOpenAIBot(Bot):
                 openai.api_base = self.api_base
             
             try:
-                # 准备messages，添加当前用户消息
+                # 使用预处理后的完整messages
                 messages = self.messages.copy()
-                if not any(msg.get("role") == "user" and msg.get("content") == query for msg in messages):
-                    messages.append({"role": "user", "content": query})
                 
-                logger.debug(f"[DynamicOpenAI] messages={messages}")
+                # 如果messages中没有当前query，说明是legacy格式，需要添加用户消息
+                latest_user_msg = None
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        latest_user_msg = msg.get("content", "")
+                        break
+                
+                if latest_user_msg != query:
+                    logger.debug("[DynamicOpenAI] Adding current query as user message")
+                    messages.append({"role": "user", "content": query})
+                else:
+                    logger.debug("[DynamicOpenAI] Using pre-processed messages")
+                
+                logger.debug(f"[DynamicOpenAI] Final messages count: {len(messages)}")
                 
                 # 调用OpenAI API
                 response = openai.ChatCompletion.create(
                     model=self.model,
                     messages=messages,
                     temperature=0.9,
-                    max_tokens=1200
+                    # max_tokens=1200
                 )
                 
                 reply_text = response.choices[0]["message"]["content"].strip()

@@ -11,6 +11,7 @@ from channel.chat_message import ChatMessage
 from common.log import logger
 from common.singleton import singleton
 from config import conf
+from bot.prompt.prompt_processor import PromptProcessor
 import os
 import mimetypes  # 添加这行来处理MIME类型
 import threading
@@ -48,6 +49,7 @@ class WebChannel(ChatChannel):
         super().__init__()
         self.msg_id_counter = 0  # 添加消息ID计数器
         self.session_queues = {}  # 存储session_id到队列的映射
+        self.prompt_processor = PromptProcessor()  # 初始化提示词处理器
         self.request_to_session = {}  # 存储request_id到session_id的映射
         # web channel无需前缀
         conf()["single_chat_prefix"] = [""]
@@ -128,15 +130,20 @@ class WebChannel(ChatChannel):
             if 'messages' in json_data:
                 # 新格式：完整配置
                 session_id = json_data.get('session_id', f'session_{int(time.time())}')
+                original_messages = json_data.get('messages', [])
+                
+                # 应用提示词处理管道
+                processed_messages = self.prompt_processor.process_full_pipeline(original_messages)
+                
                 model_config = {
                     'model': json_data.get('model'),
                     'model_url': json_data.get('model_url'),
                     'api_key': json_data.get('api_key'),
-                    'messages': json_data.get('messages', [])
+                    'messages': processed_messages  # 使用处理后的messages
                 }
                 # 从messages中提取最新的user消息作为prompt
-                prompt = self._extract_latest_user_message(model_config['messages'])
-                logger.info(f"[WebChannel] New format request: model={model_config['model']}, session_id={session_id}")
+                prompt = self._extract_latest_user_message(processed_messages)
+                logger.info(f"[WebChannel] New format request processed: model={model_config['model']}, session_id={session_id}, messages_count={len(processed_messages)}")
             else:
                 # 旧格式：兼容处理
                 session_id = json_data.get('session_id', f'session_{int(time.time())}')

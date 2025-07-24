@@ -36,9 +36,22 @@ class DynamicGeminiBot(Bot):
             
             logger.info(f"[DynamicGemini] query={query}")
             
-            # 使用动态session处理消息
+            # 检查是否需要添加当前查询作为用户消息
+            latest_user_msg = None
+            for msg in reversed(self.session.messages):
+                if msg.get("role") == "user":
+                    latest_user_msg = msg.get("content", "")
+                    break
+            
+            if latest_user_msg != query:
+                logger.debug("[DynamicGemini] Adding current query as user message")
+                self.session.add_user_message(query)
+            else:
+                logger.debug("[DynamicGemini] Using pre-processed messages")
+            
+            # 获取处理后的消息用于API调用
             gemini_messages = self.session.get_messages_for_api()
-            logger.debug(f"[DynamicGemini] messages={gemini_messages}")
+            logger.debug(f"[DynamicGemini] Final messages count: {len(gemini_messages)}")
             
             # 创建客户端
             client = genai.Client(
