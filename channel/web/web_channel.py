@@ -212,7 +212,7 @@ class WebChannel(ChatChannel):
                 
                 # 返回响应，包含请求ID以区分不同请求
                 return json.dumps({
-                    "status": "success", 
+                    "status": "success" if response["type"] != "ERROR" else "false", 
                     "has_content": True,
                     "content": response["content"],
                     "token_usage": response["token_usage"],
@@ -223,11 +223,11 @@ class WebChannel(ChatChannel):
                 
             except Empty:
                 # 没有新响应
-                return json.dumps({"status": "success", "has_content": False})
+                return json.dumps({"status": "false", "has_content": False})
                 
         except Exception as e:
             logger.error(f"Error polling response: {e}")
-            return json.dumps({"status": "error", "message": str(e)})
+            return json.dumps({"status": "false", "message": str(e)})
 
     def chat_page(self):
         """Serve the chat HTML page."""
