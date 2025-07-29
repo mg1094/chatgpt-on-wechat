@@ -139,7 +139,8 @@ class WebChannel(ChatChannel):
                     'model': json_data.get('model'),
                     'model_url': json_data.get('model_url'),
                     'api_key': json_data.get('api_key'),
-                    'messages': processed_messages  # 使用处理后的messages
+                    'messages': processed_messages,  # 使用处理后的messages
+                    'stream': json_data.get('stream', False)
                 }
                 # 从messages中提取最新的user消息作为prompt
                 prompt = self._extract_latest_user_message(processed_messages)

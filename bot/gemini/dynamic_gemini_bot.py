@@ -26,7 +26,10 @@ class DynamicGeminiBot(Bot):
         # 创建动态session管理器
         self.session = DynamicGeminiSession(model_config)
         
-        logger.info(f"[DynamicGeminiBot] Initialized with model: {self.model}, base_url: {self.api_base}")
+        # 流式输出配置（默认启用）
+        self.enable_stream = model_config.get("stream", True)
+        
+        logger.info(f"[DynamicGeminiBot] Initialized with model: {self.model}, base_url: {self.api_base}, stream: {self.enable_stream}")
 
     def reply(self, query, context: Context = None) -> Reply:
         try:
@@ -60,15 +63,44 @@ class DynamicGeminiBot(Bot):
             )
             
             # 生成回复
-            response = client.models.generate_content(
-                model=self.model,
-                contents=gemini_messages
-            )
-            
-            if response.candidates and response.candidates[0].content:
-                reply_text = response.candidates[0].content.parts[0].text
-                logger.info(f"[DynamicGemini] reply={reply_text}")
+            if self.enable_stream:
+                # 流式输出模式
+                logger.info("[DynamicGemini] Starting stream response...")
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=gemini_messages,
+                    stream=True
+                )
                 
+                reply_text = ""
+                for chunk in response:
+                    if hasattr(chunk, 'candidates') and chunk.candidates:
+                        if chunk.candidates[0].content and chunk.candidates[0].content.parts:
+                            content = chunk.candidates[0].content.parts[0].text
+                            if content:
+                                reply_text += content
+                                # 实时输出到控制台（可选）
+                                print(content, end="", flush=True)
+                
+                # 换行以保持日志清晰
+                print()
+                logger.info(f"[DynamicGemini] Stream completed, reply length: {len(reply_text)}")
+                
+            else:
+                # 非流式模式
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=gemini_messages
+                )
+                
+                if response.candidates and response.candidates[0].content:
+                    reply_text = response.candidates[0].content.parts[0].text
+                    logger.info(f"[DynamicGemini] Non-stream reply length: {len(reply_text)}")
+                else:
+                    logger.warning("[DynamicGemini] No valid response generated")
+                    return Reply(ReplyType.ERROR, "No valid response generated")
+            
+            if reply_text:
                 # 更新session
                 self.session.add_assistant_message(reply_text)
                 
@@ -81,9 +113,8 @@ class DynamicGeminiBot(Bot):
                 
                 return Reply(ReplyType.TEXT, reply_text, token_usage)
             else:
-                logger.warning("[DynamicGemini] No valid response generated")
-                error_message = "No valid response generated"
-                return Reply(ReplyType.ERROR, error_message)
+                logger.warning("[DynamicGemini] Empty response generated")
+                return Reply(ReplyType.ERROR, "Empty response generated")
                     
         except Exception as e:
             logger.error(f"[DynamicGemini] Error generating response: {str(e)}", exc_info=True)
