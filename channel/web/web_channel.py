@@ -212,8 +212,8 @@ class WebChannel(ChatChannel):
                 
                 # 返回响应，包含请求ID以区分不同请求
                 return json.dumps({
-                    "status": "success", 
-                    "has_content": True,
+                    "status": "success" if response["type"] != "ERROR" else False, 
+                    "has_content": True if response["type"] != "ERROR" else False,
                     "content": response["content"],
                     "token_usage": response["token_usage"],
                     "session_id": response["session_id"],
