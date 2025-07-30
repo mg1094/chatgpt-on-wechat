@@ -8,7 +8,7 @@ from common.log import logger
 
 class PromptProcessor:
     """
-    提示词处理器 - 负责角色JSON数据清洗、提示词合并和messages重构
+    提示词处理器 - 负责角色JSON数据清洗、消息重构
     """
     
     def __init__(self):
@@ -159,84 +159,119 @@ class PromptProcessor:
 
 Respond naturally and stay in character throughout the conversation. Focus on creating an engaging and immersive experience for the user."""
     
-    def merge_prompts(self, base_prompt: str, cleaned_char: Dict[str, Any]) -> str:
+    def _create_character_user_message(self, cleaned_char: Dict[str, Any]) -> Dict[str, str]:
         """
-        合并基础提示词和角色数据
+        创建角色配置的user消息
         
         Args:
-            base_prompt: 基础提示词
             cleaned_char: 清洗后的角色数据
             
         Returns:
-            合并后的完整系统提示词
+            角色配置的user消息
         """
         try:
             # 将角色数据序列化为格式化的JSON
             char_json_str = json.dumps(cleaned_char, indent=2, ensure_ascii=False)
             
-            # 按照模板拼接
-            merged_prompt = f"""{base_prompt}
-
-Below is the complete JSON configuration information for the character:
-
+            # 构建角色配置消息
+            content = f"""Character Configuration:
 ```json
 {char_json_str}
-```
-
-Now begin role-playing as the character based on the provided prompt and character JSON information, engaging in dialogue with the user."""
+```"""
             
-            logger.info("[PromptProcessor] Successfully merged base prompt with character data")
-            return merged_prompt
+            return {
+                "role": "user",
+                "content": content
+            }
             
         except Exception as e:
-            logger.error(f"[PromptProcessor] Failed to merge prompts: {e}")
-            return base_prompt  # 降级策略：返回基础提示词
+            logger.error(f"[PromptProcessor] Failed to create character user message: {e}")
+            return {
+                "role": "user",
+                "content": f"Character Configuration:{str(cleaned_char)}"
+            }
     
-    def reconstruct_messages(self, original_messages: List[Dict[str, str]], merged_system_prompt: str) -> List[Dict[str, str]]:
+    def _create_first_message_if_exists(self, cleaned_char: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
-        重构messages列表，替换system消息
+        如果存在first_message，创建对应的assistant消息
         
         Args:
+            cleaned_char: 清洗后的角色数据
+            
+        Returns:
+            first_message的assistant消息，如果不存在返回None
+        """
+        first_msg = cleaned_char.get('first_message')
+        if first_msg and isinstance(first_msg, str) and first_msg.strip():
+            logger.debug("[PromptProcessor] Found first_message, creating assistant message")
+            return {
+                "role": "assistant",
+                "content": first_msg.strip()
+            }
+        
+        logger.debug("[PromptProcessor] No valid first_message found")
+        return None
+    
+    def _build_new_message_sequence(self, base_prompt: str, cleaned_char: Dict[str, Any], original_messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        构建新的消息序列
+        
+        Args:
+            base_prompt: 基础提示词
+            cleaned_char: 清洗后的角色数据
             original_messages: 原始messages列表
-            merged_system_prompt: 合并后的系统提示词
             
         Returns:
             重构后的messages列表
         """
-        if not isinstance(original_messages, list) or len(original_messages) == 0:
-            logger.warning("[PromptProcessor] Empty or invalid messages list")
-            return [{"role": "system", "content": merged_system_prompt}]
+        if not isinstance(original_messages, list):
+            logger.warning("[PromptProcessor] Invalid original messages format")
+            return []
         
-        reconstructed = []
-        system_replaced = False
+        new_messages = []
         
+        # 1. 添加system消息（基础提示词）
+        new_messages.append({
+            "role": "system",
+            "content": base_prompt
+        })
+        logger.debug("[PromptProcessor] Added system message with base prompt")
+        
+        # 2. 添加角色配置user消息
+        char_user_msg = self._create_character_user_message(cleaned_char)
+        new_messages.append(char_user_msg)
+        logger.debug("[PromptProcessor] Added character configuration user message")
+        
+        # 3. 添加first_message的assistant消息（如果存在）
+        first_msg = self._create_first_message_if_exists(cleaned_char)
+        if first_msg:
+            new_messages.append(first_msg)
+            logger.debug("[PromptProcessor] Added first_message assistant message")
+        
+        # 4. 添加原始对话消息（跳过包含角色JSON的system消息）
+        original_dialog_count = 0
         for message in original_messages:
             if not isinstance(message, dict) or 'role' not in message:
                 logger.warning(f"[PromptProcessor] Invalid message format: {message}")
                 continue
             
-            # 替换第一个system消息
-            if message['role'] == 'system' and not system_replaced:
-                reconstructed.append({
-                    "role": "system",
-                    "content": merged_system_prompt
-                })
-                system_replaced = True
-                logger.debug("[PromptProcessor] Replaced system message with merged prompt")
+            # 跳过包含角色JSON的system消息
+            if message['role'] == 'system':
+                content = message.get('content', '')
+                if self._extract_character_json_from_content(content):
+                    logger.debug("[PromptProcessor] Skipping system message with character JSON")
+                    continue
+                else:
+                    # 保留其他system消息
+                    new_messages.append(message)
+                    original_dialog_count += 1
             else:
-                # 保持其他消息不变
-                reconstructed.append(message)
+                # 保留所有非system消息，保持原有顺序
+                new_messages.append(message)
+                original_dialog_count += 1
         
-        # 如果没有找到system消息，在开头添加一个
-        if not system_replaced:
-            reconstructed.insert(0, {
-                "role": "system", 
-                "content": merged_system_prompt
-            })
-            logger.debug("[PromptProcessor] Added new system message at the beginning")
-        
-        logger.info(f"[PromptProcessor] Messages reconstruction completed, {len(reconstructed)} messages total")
-        return reconstructed
+        logger.info(f"[PromptProcessor] Message sequence built: system(1) + char_config(1) + first_msg({1 if first_msg else 0}) + original_dialog({original_dialog_count}) = {len(new_messages)} total")
+        return new_messages
     
     def process_full_pipeline(self, messages: List[Dict[str, str]], prompt_file: str = "bot/prompt/prompt-en.py") -> List[Dict[str, str]]:
         """
@@ -264,11 +299,8 @@ Now begin role-playing as the character based on the provided prompt and charact
             # 步骤3: 加载基础提示词
             base_prompt = self.load_base_prompt(prompt_file)
             
-            # 步骤4: 合并提示词
-            merged_prompt = self.merge_prompts(base_prompt, cleaned_char)
-            
-            # 步骤5: 重构messages
-            final_messages = self.reconstruct_messages(messages, merged_prompt)
+            # 步骤4: 构建新的消息序列
+            final_messages = self._build_new_message_sequence(base_prompt, cleaned_char, messages)
             
             logger.info("[PromptProcessor] Full processing pipeline completed successfully")
             return final_messages
@@ -291,23 +323,93 @@ Now begin role-playing as the character based on the provided prompt and charact
         for message in messages:
             if message.get('role') == 'system':
                 content = message.get('content', '')
-                try:
-                    # 尝试直接解析整个content为JSON
-                    char_data = json.loads(content)
-                    if isinstance(char_data, dict) and 'name' in char_data:
-                        logger.debug("[PromptProcessor] Found character JSON in system message")
-                        return char_data
-                except json.JSONDecodeError:
-                    # 尝试从content中提取JSON部分
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        try:
-                            char_data = json.loads(json_match.group())
-                            if isinstance(char_data, dict) and 'name' in char_data:
-                                logger.debug("[PromptProcessor] Extracted character JSON from system message")
-                                return char_data
-                        except json.JSONDecodeError:
-                            continue
+                char_data = self._extract_character_json_from_content(content)
+                if char_data:
+                    return char_data
         
         logger.debug("[PromptProcessor] No character JSON found in messages")
-        return None 
+        return None
+    
+    def _extract_character_json_from_content(self, content: str) -> Optional[Dict[str, Any]]:
+        """
+        从content中提取角色JSON数据
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            角色JSON数据，如果未找到返回None
+        """
+        try:
+            # 尝试直接解析整个content为JSON
+            char_data = json.loads(content)
+            if isinstance(char_data, dict) and 'name' in char_data:
+                logger.debug("[PromptProcessor] Found character JSON in content")
+                return char_data
+        except json.JSONDecodeError:
+            # 尝试从content中提取JSON部分
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    char_data = json.loads(json_match.group())
+                    if isinstance(char_data, dict) and 'name' in char_data:
+                        logger.debug("[PromptProcessor] Extracted character JSON from content")
+                        return char_data
+                except json.JSONDecodeError:
+                    pass
+        
+        return None
+
+    # 保留旧方法以保持向后兼容（标记为废弃）
+    def merge_prompts(self, base_prompt: str, cleaned_char: Dict[str, Any]) -> str:
+        """
+        [DEPRECATED] 合并基础提示词和角色数据 - 仅为向后兼容保留
+        """
+        logger.warning("[PromptProcessor] merge_prompts is deprecated, use process_full_pipeline instead")
+        try:
+            char_json_str = json.dumps(cleaned_char, indent=2, ensure_ascii=False)
+            merged_prompt = f"""{base_prompt}
+
+Below is the complete JSON configuration information for the character:
+
+```json
+{char_json_str}
+```
+
+Now begin role-playing as the character based on the provided prompt and character JSON information, engaging in dialogue with the user."""
+            return merged_prompt
+        except Exception as e:
+            logger.error(f"[PromptProcessor] Failed to merge prompts: {e}")
+            return base_prompt
+    
+    def reconstruct_messages(self, original_messages: List[Dict[str, str]], merged_system_prompt: str) -> List[Dict[str, str]]:
+        """
+        [DEPRECATED] 重构messages列表 - 仅为向后兼容保留
+        """
+        logger.warning("[PromptProcessor] reconstruct_messages is deprecated, use process_full_pipeline instead")
+        if not isinstance(original_messages, list) or len(original_messages) == 0:
+            return [{"role": "system", "content": merged_system_prompt}]
+        
+        reconstructed = []
+        system_replaced = False
+        
+        for message in original_messages:
+            if not isinstance(message, dict) or 'role' not in message:
+                continue
+            
+            if message['role'] == 'system' and not system_replaced:
+                reconstructed.append({
+                    "role": "system",
+                    "content": merged_system_prompt
+                })
+                system_replaced = True
+            else:
+                reconstructed.append(message)
+        
+        if not system_replaced:
+            reconstructed.insert(0, {
+                "role": "system", 
+                "content": merged_system_prompt
+            })
+        
+        return reconstructed 
