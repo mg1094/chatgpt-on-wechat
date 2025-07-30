@@ -70,7 +70,8 @@ class DynamicOpenAIBot(Bot):
                 model=self.model,
                 messages=messages,
                 stream=stream,
-                temperature=0.9,                            
+                temperature=1,
+                top_p=0.95,
                 extra_body={}
             )
 
@@ -131,4 +132,122 @@ class DynamicOpenAIBot(Bot):
         except Exception as e:
             logger.error(f"[DynamicOpenAI] Error generating response: {str(e)}", exc_info=True)
             error_message = f"Failed to invoke [DynamicOpenAI] api: {str(e)}"
-            return Reply(ReplyType.ERROR, error_message) 
+            return Reply(ReplyType.ERROR, error_message)
+
+    def reply_stream(self, query, context: Context = None):
+        """
+        流式响应方法，返回一个生成器
+        
+        Args:
+            query: 查询内容
+            context: 上下文
+            
+        Yields:
+            dict: 包含流式数据的字典
+        """
+        try:
+            if context.type != ContextType.TEXT:
+                logger.warn(f"[DynamicOpenAI] Unsupported message type for streaming, type={context.type}")
+                return None
+            
+            logger.info(f"[DynamicOpenAI] Starting stream for query={query}")
+            
+            # 使用预处理后的完整messages
+            messages = self.messages.copy()
+            
+            # 如果messages中没有当前query，说明是legacy格式，需要添加用户消息
+            latest_user_msg = None
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    latest_user_msg = msg.get("content", "")
+                    break
+            
+            if latest_user_msg != query:
+                logger.debug("[DynamicOpenAI] Adding current query as user message")
+                messages.append({"role": "user", "content": query})
+            else:
+                logger.debug("[DynamicOpenAI] Using pre-processed messages")
+            
+            logger.debug(f"[DynamicOpenAI] Final messages count: {len(messages)}")
+            
+            # 创建 OpenAI 客户端
+            client = OpenAI(
+                base_url=self.api_base,
+                api_key=self.api_key,
+            )
+            
+            # 调用OpenAI API with stream=True
+            chat_completion_res = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                temperature=1,
+                top_p=0.95,
+                extra_body={}
+            )
+            
+            # 处理流式响应
+            accumulated_text = ""
+            estimated_prompt_tokens = len(str(messages)) // 4
+            
+            logger.info("[DynamicOpenAI] Starting to yield stream chunks...")
+            
+            for chunk in chat_completion_res:
+                try:
+                    content = chunk.choices[0].delta.content or ""
+                    if content:
+                        accumulated_text += content
+                        
+                        # 生成数据块
+                        chunk_data = {
+                            "content": content,
+                            "accumulated_content": accumulated_text,
+                            "finished": False,
+                            "token_usage": {
+                                "prompt_tokens": estimated_prompt_tokens,
+                                "completion_tokens": len(accumulated_text) // 4,
+                                "total_tokens": estimated_prompt_tokens + len(accumulated_text) // 4
+                            }
+                        }
+                        
+                        yield chunk_data
+                        
+                        # 控制台输出（可选）
+                        print(content, end="", flush=True)
+                
+                except Exception as chunk_error:
+                    logger.error(f"[DynamicOpenAI] Error processing chunk: {chunk_error}")
+                    continue
+            
+            # 换行以保持日志清晰
+            print()
+            
+            # 计算最终token使用情况
+            final_token_usage = {
+                "prompt_tokens": estimated_prompt_tokens,
+                "completion_tokens": len(accumulated_text) // 4,
+                "total_tokens": estimated_prompt_tokens + len(accumulated_text) // 4
+            }
+            
+            logger.info(f"[DynamicOpenAI] Stream completed, total length: {len(accumulated_text)}")
+            
+            # 发送最终数据块（表示流结束）
+            final_chunk = {
+                "content": "",
+                "accumulated_content": accumulated_text,
+                "finished": True,
+                "event": "end",
+                "token_usage": final_token_usage
+            }
+            
+            yield final_chunk
+                
+        except Exception as e:
+            logger.error(f"[DynamicOpenAI] Error in stream processing: {str(e)}", exc_info=True)
+            # 生成错误块
+            error_chunk = {
+                "error": f"Failed to invoke [DynamicOpenAI] streaming api: {str(e)}",
+                "finished": True,
+                "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            }
+            yield error_chunk 

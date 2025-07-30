@@ -49,6 +49,7 @@ class WebChannel(ChatChannel):
         super().__init__()
         self.msg_id_counter = 0  # 添加消息ID计数器
         self.session_queues = {}  # 存储session_id到队列的映射
+        self.stream_queues = {}  # 存储request_id到流式数据队列的映射
         self.prompt_processor = PromptProcessor()  # 初始化提示词处理器
         self.request_to_session = {}  # 存储request_id到session_id的映射
         # web channel无需前缀
@@ -117,6 +118,70 @@ class WebChannel(ChatChannel):
         except Exception as e:
             logger.error(f"Error in send method: {e}")
 
+    def send_chunk(self, chunk_data: dict, context: Context):
+        """
+        发送流式数据块到前端
+        
+        Args:
+            chunk_data: 包含流式数据的字典，如 {"content": "hello", "finished": False}
+            context: 上下文对象，包含request_id
+        """
+        try:
+            request_id = context.get("request_id", None)
+            if not request_id:
+                logger.error("No request_id found in context, cannot send chunk")
+                return
+            
+            # 确保流队列存在
+            if request_id not in self.stream_queues:
+                self.stream_queues[request_id] = Queue()
+                logger.debug(f"Created stream queue for request {request_id}")
+            
+            # 添加时间戳和请求ID
+            chunk_data["timestamp"] = time.time()
+            chunk_data["request_id"] = request_id
+            
+            # 将数据块放入流队列
+            self.stream_queues[request_id].put(chunk_data)
+            logger.debug(f"Chunk sent to stream queue for request {request_id}: {chunk_data.get('content', '')[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Error in send_chunk method: {e}")
+
+    def send_stream_end(self, context: Context, final_data: dict = None):
+        """
+        发送流结束信号
+        
+        Args:
+            context: 上下文对象
+            final_data: 最终数据，如token使用情况
+        """
+        try:
+            request_id = context.get("request_id", None)
+            if not request_id:
+                logger.error("No request_id found in context, cannot send stream end")
+                return
+            
+            # 构建结束信号
+            end_signal = {
+                "event": "end",
+                "timestamp": time.time(),
+                "request_id": request_id,
+                "finished": True
+            }
+            
+            # 添加最终数据（如token使用情况）
+            if final_data:
+                end_signal.update(final_data)
+            
+            # 发送结束信号
+            if request_id in self.stream_queues:
+                self.stream_queues[request_id].put(end_signal)
+                logger.debug(f"Stream end signal sent for request {request_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in send_stream_end method: {e}")
+
     def post_message(self):
         """
         Handle incoming messages from users via POST request.
@@ -131,24 +196,27 @@ class WebChannel(ChatChannel):
                 # 新格式：完整配置
                 session_id = json_data.get('session_id', f'session_{int(time.time())}')
                 original_messages = json_data.get('messages', [])
+                stream_enabled = json_data.get('stream', False)
                 
                 # 应用提示词处理管道
                 processed_messages = self.prompt_processor.process_full_pipeline(original_messages)
+                logger.info(f"[WebChannel] 处理后的messages: {json.dumps(processed_messages, ensure_ascii=False, indent=2)}")
                 
                 model_config = {
                     'model': json_data.get('model'),
                     'model_url': json_data.get('model_url'),
                     'api_key': json_data.get('api_key'),
                     'messages': processed_messages,  # 使用处理后的messages
-                    'stream': json_data.get('stream', False)
+                    'stream': stream_enabled
                 }
                 # 从messages中提取最新的user消息作为prompt
                 prompt = self._extract_latest_user_message(processed_messages)
-                logger.info(f"[WebChannel] New format request processed: model={model_config['model']}, session_id={session_id}, messages_count={len(processed_messages)}")
+                logger.info(f"[WebChannel] New format request processed: model={model_config['model']}, session_id={session_id}, messages_count={len(processed_messages)}, stream={stream_enabled}")
             else:
                 # 旧格式：兼容处理
                 session_id = json_data.get('session_id', f'session_{int(time.time())}')
                 prompt = json_data.get('message', '')
+                stream_enabled = False  # 旧格式不支持流式
                 model_config = None  # 使用后端默认配置
                 logger.info(f"[WebChannel] Legacy format request: session_id={session_id}")
             
@@ -158,9 +226,14 @@ class WebChannel(ChatChannel):
             # 将请求ID与会话ID关联
             self.request_to_session[request_id] = session_id
             
-            # 确保会话队列存在
+            # 确保会话队列存在（非流式模式需要）
             if session_id not in self.session_queues:
                 self.session_queues[session_id] = Queue()
+            
+            # 为流式请求创建流队列
+            if stream_enabled:
+                self.stream_queues[request_id] = Queue()
+                logger.debug(f"Created stream queue for request {request_id}")
             
             # 创建消息对象
             msg = WebMessage(self._generate_msg_id(), prompt)
@@ -175,17 +248,24 @@ class WebChannel(ChatChannel):
             context["isgroup"] = False  # 添加 isgroup 字段
             context["receiver"] = session_id  # 添加 receiver 字段
             context["model_config"] = model_config  # 添加模型配置
+            context["stream_enabled"] = stream_enabled  # 添加流式标识
             
             # 异步处理消息 - 只传递上下文
-            # threading.Thread 可以传递的参数有:
-            # target: 线程要执行的目标函数
-            # args: 传递给目标函数的位置参数（元组）
-            # kwargs: 传递给目标函数的关键字参数（字典）
-            # daemon: 是否为守护线程（布尔值）
             threading.Thread(target=self.produce, args=(context,), daemon=True).start()
             
-            # 返回请求ID
-            return json.dumps({"status": "success", "session_id": session_id, "request_id": request_id})
+            # 构建响应
+            response = {
+                "status": "success", 
+                "session_id": session_id, 
+                "request_id": request_id
+            }
+            
+            # 如果启用了流式，添加stream_url
+            if stream_enabled:
+                response["stream_url"] = f"/stream/{request_id}"
+                logger.debug(f"Stream URL generated: /stream/{request_id}")
+            
+            return json.dumps(response)
             
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -230,6 +310,72 @@ class WebChannel(ChatChannel):
             logger.error(f"Error polling response: {e}")
             return json.dumps({"status": "false", "message": str(e)})
 
+    def stream_response(self, request_id):
+        """
+        处理SSE流式响应
+        
+        Args:
+            request_id: 请求ID
+        """
+        try:
+            # 设置SSE响应头
+            web.header('Content-Type', 'text/event-stream; charset=utf-8')
+            web.header('Cache-Control', 'no-cache')
+            web.header('Connection', 'keep-alive')
+            web.header('Access-Control-Allow-Origin', '*')
+            web.header('Access-Control-Allow-Headers', 'Cache-Control')
+            
+            # 检查流队列是否存在
+            if request_id not in self.stream_queues:
+                logger.warning(f"Stream queue not found for request {request_id}")
+                yield f"data: {json.dumps({'error': 'Stream not found'}, ensure_ascii=False)}\n\n"
+                return
+            
+            logger.info(f"Starting SSE stream for request {request_id}")
+            
+            # 发送初始连接确认
+            yield f"data: {json.dumps({'event': 'connected', 'request_id': request_id}, ensure_ascii=False)}\n\n"
+            
+            # 持续从流队列获取数据
+            stream_queue = self.stream_queues[request_id]
+            timeout = 30  # 30秒超时
+            
+            while True:
+                try:
+                    # 从队列获取数据，设置超时
+                    chunk_data = stream_queue.get(timeout=timeout)
+                    
+                    # 构建SSE消息，确保正确处理特殊字符
+                    event_data = json.dumps(chunk_data, ensure_ascii=False, separators=(',', ':'))
+                    
+                    # 对于包含换行符的内容，需要进行适当的转义
+                    # 但JSON.dumps已经处理了转义，所以这里直接使用
+                    yield f"data: {event_data}\n\n"
+                    
+                    # 检查是否为结束信号
+                    if chunk_data.get("event") == "end" or chunk_data.get("finished", False):
+                        logger.info(f"Stream ended for request {request_id}")
+                        break
+                        
+                except Empty:
+                    # 超时，发送心跳
+                    logger.debug(f"Stream timeout for request {request_id}, sending heartbeat")
+                    yield f"data: {json.dumps({'event': 'heartbeat', 'timestamp': time.time()}, ensure_ascii=False)}\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"Error in stream loop for request {request_id}: {e}")
+                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                    break
+            
+            # 清理流队列
+            if request_id in self.stream_queues:
+                del self.stream_queues[request_id]
+                logger.debug(f"Cleaned up stream queue for request {request_id}")
+                
+        except Exception as e:
+            logger.error(f"Error in stream_response for request {request_id}: {e}")
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
     def chat_page(self):
         """Serve the chat HTML page."""
         file_path = os.path.join(os.path.dirname(__file__), 'chat.html')  # 使用绝对路径
@@ -259,6 +405,7 @@ class WebChannel(ChatChannel):
             '/message', 'MessageHandler',
             '/poll', 'PollHandler',  # 添加轮询处理器
             '/chat', 'ChatHandler',
+            '/stream/(.*)', 'StreamHandler',  # 添加流式处理器
             '/assets/(.*)', 'AssetsHandler',  # 匹配 /assets/任何路径
         )
         app = web.application(urls, globals(), autoreload=False)
@@ -292,6 +439,25 @@ class MessageHandler:
 class PollHandler:
     def POST(self):
         return WebChannel().poll_response()
+
+
+class StreamHandler:
+    def GET(self, request_id):
+        """处理SSE流式响应"""
+        try:
+            if not request_id:
+                raise web.badrequest("Missing request_id")
+            
+            # 获取WebChannel实例并调用stream_response方法
+            web_channel = WebChannel()
+            
+            # 返回生成器用于SSE流式响应
+            return web_channel.stream_response(request_id)
+            
+        except Exception as e:
+            logger.error(f"Error in StreamHandler: {e}")
+            web.header('Content-Type', 'application/json')
+            return json.dumps({"error": str(e)})
 
 
 class ChatHandler:

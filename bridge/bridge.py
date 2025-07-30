@@ -84,16 +84,118 @@ class Bridge(object):
 
     def fetch_reply_content(self, query, context: Context) -> Reply:
         model_config = context.get("model_config")
+        stream_enabled = context.get("stream_enabled", False)
         
         if model_config:
             # 动态模式：根据请求配置创建Bot
-            logger.info(f"[Bridge] Using dynamic mode with model: {model_config.get('model')}")
+            logger.info(f"[Bridge] Using dynamic mode with model: {model_config.get('model')}, stream: {stream_enabled}")
             bot = self.create_dynamic_bot(model_config)
-            return bot.reply(query, context)
+            
+            if stream_enabled:
+                # 流式模式：处理生成器响应
+                return self._handle_stream_response(bot, query, context)
+            else:
+                # 非流式模式：直接返回完整响应
+                return bot.reply(query, context)
         else:
             # 兼容模式：使用原有逻辑
             logger.debug("[Bridge] Using legacy mode with default config")
             return self.get_bot("chat").reply(query, context)
+
+    def _handle_stream_response(self, bot, query, context: Context) -> Reply:
+        """
+        处理流式响应
+        
+        Args:
+            bot: Bot实例
+            query: 查询内容
+            context: 上下文
+            
+        Returns:
+            Reply对象（用于兼容性，内容可能为空）
+        """
+        try:
+            # 获取Channel实例（用于发送流式数据）
+            channel = context.get("channel")
+            if not channel:
+                logger.error("[Bridge] No channel found in context for streaming")
+                # 降级到非流式模式
+                return bot.reply(query, context)
+            
+            logger.info(f"[Bridge] Starting stream processing for request {context.get('request_id')}")
+            
+            # 调用Bot的流式方法
+            stream_generator = bot.reply_stream(query, context)
+            
+            if stream_generator is None:
+                logger.warning("[Bridge] Bot does not support streaming, falling back to regular mode")
+                return bot.reply(query, context)
+            
+            # 处理流式数据
+            accumulated_content = ""
+            token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            
+            for chunk in stream_generator:
+                if isinstance(chunk, dict):
+                    # 处理数据块
+                    chunk_content = chunk.get("content", "")
+                    if chunk_content:
+                        accumulated_content += chunk_content
+                        
+                        # 发送数据块到前端
+                        chunk_data = {
+                            "content": chunk_content,
+                            "accumulated_content": accumulated_content,
+                            "finished": False,
+                            "event": "chunk"
+                        }
+                        channel.send_chunk(chunk_data, context)
+                    
+                    # 更新token使用情况
+                    if "token_usage" in chunk:
+                        token_usage.update(chunk["token_usage"])
+                
+                elif isinstance(chunk, str):
+                    # 简单文本块
+                    accumulated_content += chunk
+                    chunk_data = {
+                        "content": chunk,
+                        "accumulated_content": accumulated_content,
+                        "finished": False,
+                        "event": "chunk"
+                    }
+                    channel.send_chunk(chunk_data, context)
+            
+            # 发送结束信号
+            final_data = {
+                "content": accumulated_content,
+                "token_usage": token_usage,
+                "accumulated_content": accumulated_content
+            }
+            channel.send_stream_end(context, final_data)
+            
+            logger.info(f"[Bridge] Stream processing completed for request {context.get('request_id')}")
+            
+            # 返回一个Reply对象用于兼容性（虽然内容已经通过流发送）
+            from bridge.reply import Reply, ReplyType
+            reply = Reply(ReplyType.TEXT, accumulated_content)
+            reply.token_usage = token_usage
+            return reply
+            
+        except Exception as e:
+            logger.error(f"[Bridge] Error in stream processing: {e}")
+            # 发送错误信息
+            if channel:
+                error_data = {
+                    "error": str(e),
+                    "finished": True,
+                    "event": "error"
+                }
+                channel.send_chunk(error_data, context)
+            
+            # 返回错误Reply
+            from bridge.reply import Reply, ReplyType
+            return Reply(ReplyType.ERROR, f"Stream processing failed: {str(e)}")
 
     def create_dynamic_bot(self, model_config):
         """根据模型配置动态创建Bot实例"""
