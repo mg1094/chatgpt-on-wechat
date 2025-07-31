@@ -355,8 +355,10 @@ Respond naturally and stay in character throughout the conversation. Focus on cr
                     if isinstance(char_data, dict) and 'name' in char_data:
                         logger.debug("[PromptProcessor] Extracted character JSON from content")
                         return char_data
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as e:
+                    import traceback
+                    tb_str = traceback.format_exc()
+                    logger.error(f"[PromptProcessor] 解析角色JSON失败: {e}\n错误位置:\n{tb_str}")
         
         return None
 
