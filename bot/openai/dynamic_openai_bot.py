@@ -183,7 +183,8 @@ class DynamicOpenAIBot(Bot):
                 stream=True,
                 temperature=1,
                 top_p=0.95,
-                extra_body={}
+                extra_body={},
+                stream_options={"include_usage": True}
             )
             
             # 处理流式响应
@@ -203,11 +204,11 @@ class DynamicOpenAIBot(Bot):
                             "content": content,
                             "accumulated_content": accumulated_text,
                             "finished": False,
-                            "token_usage": {
-                                "prompt_tokens": estimated_prompt_tokens,
-                                "completion_tokens": len(accumulated_text) // 4,
-                                "total_tokens": estimated_prompt_tokens + len(accumulated_text) // 4
-                            }
+                            # "token_usage": {
+                            #     "prompt_tokens": estimated_prompt_tokens,
+                            #     "completion_tokens": len(accumulated_text) // 4,
+                            #     "total_tokens": estimated_prompt_tokens + len(accumulated_text) // 4
+                            # }
                         }
                         
                         yield chunk_data
@@ -222,12 +223,29 @@ class DynamicOpenAIBot(Bot):
             # 换行以保持日志清晰
             print()
             
-            # 计算最终token使用情况
-            final_token_usage = {
-                "prompt_tokens": estimated_prompt_tokens,
-                "completion_tokens": len(accumulated_text) // 4,
-                "total_tokens": estimated_prompt_tokens + len(accumulated_text) // 4
-            }
+            # 优化后的代码
+            final_token_usage = {}
+            if hasattr(chunk, 'usage') and chunk.usage:
+                # 1. 安全地获取基础token数，如果不存在则默认为0
+                prompt_tokens = getattr(chunk.usage, 'prompt_tokens', 0)
+                completion_tokens = getattr(chunk.usage, 'completion_tokens', 0)
+
+                # 2. 安全地处理非标准的 'reasoning_tokens'
+                reasoning_tokens = 0
+                if hasattr(chunk.usage, 'completion_tokens_details') and chunk.usage.completion_tokens_details:
+                    reasoning_tokens = getattr(chunk.usage.completion_tokens_details, 'reasoning_tokens', 0)
+
+                # 3. 计算最终的 completion_tokens
+                final_completion_tokens = completion_tokens + reasoning_tokens
+                
+                # 4. 为保证一致性，重新计算 total_tokens
+                final_total_tokens = prompt_tokens + final_completion_tokens
+
+                final_token_usage = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": final_completion_tokens,
+                    "total_tokens": final_total_tokens
+                }
             
             logger.info(f"[DynamicOpenAI] Stream completed, total length: {len(accumulated_text)}")
             
