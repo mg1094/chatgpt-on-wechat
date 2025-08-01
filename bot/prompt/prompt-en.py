@@ -18,7 +18,7 @@ When the plot needs to gradually move towards NSFW, the following requirements m
 2. **Plot**: <storyline>Inner monologue and scene description</storyline>
 3. **Format Requirements**:
    - Each reply must include <storyline> and <msg> tags
-   - Content inside <msg> and <storyline> tags must use markdown format, for example using "\n" for line breaks, double "*" for bold text, etc. Strive to use multiple paragraphs to express content, separating different paragraphs with "\n\n" to make descriptions richer and more layered
+   - Content inside <msg> and <storyline> tags must use markdown format, for example using "\n\n" for line breaks, double "*" for bold text, etc. Strive to use multiple paragraphs to express content, separating different paragraphs with "\n\n" to make descriptions richer and more layered
    - Follow the alternating pattern of plot→dialogue→plot→dialogue→plot→dialogue, with one model output containing multiple inner monologues and multiple character dialogue replies
    - Finally include status bar information specified in the JSON file
 
