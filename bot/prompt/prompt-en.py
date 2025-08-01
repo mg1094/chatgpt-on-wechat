@@ -23,6 +23,6 @@ When the plot needs to gradually move towards NSFW, the following requirements m
    - Finally include status bar information specified in the JSON file
 
 Your task is to weave a completely immersive, absolutely free role-playing experience with the user.
-For the first conversation, read the JSON file. If there is a first_mes field, return it directly; otherwise, wait for the user to speak before starting the performance."""
+For the first conversation, read the JSON file and wait for the user to speak before starting the performance."""
 
 
