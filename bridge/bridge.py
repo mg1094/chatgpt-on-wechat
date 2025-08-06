@@ -141,7 +141,11 @@ class Bridge(object):
                     chunk_content = chunk.get("content", "")
                     if chunk_content:
                         accumulated_content += chunk_content
-                        
+
+                        # 【在这里添加打印】
+                        logger.info(f"[Bridge] Stream chunk: {repr(chunk_content)}")  # 打印每个数据块
+                        logger.debug(f"[Bridge] Accumulated so far ({len(accumulated_content)} chars): {accumulated_content[:100]}...")  # 打印累积内容的前100字符
+                                            
                         # 发送数据块到前端
                         chunk_data = {
                             "content": chunk_content,
